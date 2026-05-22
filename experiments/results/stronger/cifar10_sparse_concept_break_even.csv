@@ -1,0 +1,7 @@
+budget,method,first_query_count_beating_label_matched_mc,final_audited_queries,final_mean_label_cost_per_query,final_rmse_ratio_vs_label_matched_mc
+512,sparse_internal,5,12,1012.0,0.899123297978734
+512,output_comp,6,12,1012.0,0.9544129815195622
+512,input_concept_comp,1,12,1012.0,1.5606975160757806
+2048,output_comp,2,12,2548.0,0.7109693484273767
+2048,sparse_internal,4,12,2548.0,0.8834812110300451
+2048,input_concept_comp,2,12,2548.0,0.9514573820127548

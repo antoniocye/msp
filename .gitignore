@@ -1,0 +1,24 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.so
+
+.venv/
+venv/
+env/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+data/
+*.log
+
+# Generic outputs from fresh local runs. The archived CIFAR-10 artifacts under
+# experiments/results/stronger/ are small enough to keep in the repo.
+experiments/results/sparse_concept_*
+experiments/results/stronger/*
+!experiments/results/stronger/cifar10_*
+experiments/results/stronger/*_run.log
+experiments/results/stronger/*_paper.md
+!experiments/results/README.md
