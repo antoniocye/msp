@@ -25,7 +25,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import CIFAR10, CIFAR100
 from torchvision.models import ResNet18_Weights, resnet18
 
 
@@ -207,11 +207,52 @@ class Cifar10Source:
         return self.eval_images[idx].astype(np.float32), self.eval_labels[idx].astype(np.int64)
 
 
-def build_source(name: str) -> FashionSource | Cifar10Source:
+class Cifar100Source:
+    _cache: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]] | None = None
+
+    def __init__(self) -> None:
+        if self._cache is None:
+            data_root = ROOT / "data"
+            train = CIFAR100(root=str(data_root), train=True, download=True)
+            test = CIFAR100(root=str(data_root), train=False, download=True)
+            x_train = np.asarray(train.data, dtype=np.float32).transpose(0, 3, 1, 2) / 255.0
+            y_train = np.asarray(train.targets, dtype=np.int64)
+            x_eval = np.asarray(test.data, dtype=np.float32).transpose(0, 3, 1, 2) / 255.0
+            y_eval = np.asarray(test.targets, dtype=np.int64)
+            self._cache = (x_train, y_train, x_eval, y_eval, list(train.classes))
+        x_train, y_train, x_eval, y_eval, class_names = self._cache
+        self.name = "cifar100"
+        self.dataset_label = "CIFAR-100 (torchvision)"
+        self.class_names = class_names
+        self.train_images = x_train
+        self.train_labels = y_train
+        self.eval_images = x_eval
+        self.eval_labels = y_eval
+
+    @staticmethod
+    def augment(images: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        return FashionSource.augment(images, rng)
+
+    def sample_train(self, n: int, rng: np.random.Generator, augment: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
+        idx = rng.choice(len(self.train_images), size=n, replace=n > len(self.train_images))
+        images = self.train_images[idx]
+        if augment:
+            images = self.augment(images, rng)
+        labels = self.train_labels[idx]
+        return torch.tensor(images, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
+
+    def sample_eval_np(self, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+        idx = rng.choice(len(self.eval_images), size=n, replace=n > len(self.eval_images))
+        return self.eval_images[idx].astype(np.float32), self.eval_labels[idx].astype(np.int64)
+
+
+def build_source(name: str) -> FashionSource | Cifar10Source | Cifar100Source:
     if name == "fashion_mnist":
         return FashionSource()
     if name == "cifar10":
         return Cifar10Source()
+    if name == "cifar100":
+        return Cifar100Source()
     raise ValueError(name)
 
 
@@ -289,7 +330,7 @@ class ResNet18Audit(nn.Module):
 
 
 def train_model(
-    source: FashionSource | Cifar10Source,
+    source: FashionSource | Cifar10Source | Cifar100Source,
     seed: int,
     train_n: int,
     epochs: int,
@@ -456,7 +497,7 @@ class ConceptSpec:
         return vals, np.stack(concept_values, axis=1).astype(bool)
 
 
-def collect(source: FashionSource, model: FashionCNN, concept_spec: ConceptSpec, n: int, rng: np.random.Generator) -> Collected:
+def collect(source: FashionSource | Cifar10Source | Cifar100Source, model: nn.Module, concept_spec: ConceptSpec, n: int, rng: np.random.Generator) -> Collected:
     x_np, y = source.sample_eval_np(n, rng)
     x = torch.tensor(x_np, dtype=torch.float32)
     logits_all = []
@@ -587,28 +628,39 @@ def basis_literal(rng: np.random.Generator, basis_hi: np.ndarray, basis_lo: np.n
     return Literal("basis_low", threshold=float(basis_lo[k]), concept=k)
 
 
-def sample_query_candidate(rng: np.random.Generator, n_concepts: int, basis_hi: np.ndarray, basis_lo: np.ndarray) -> tuple[str, tuple[tuple[Literal, ...], ...]]:
-    family = str(
-        rng.choice(
-            [
-                "basis_class_error",
-                "basis_confusion",
-                "basis_pair_error",
-                "concept_class_error",
-                "concept_confusion",
-                "random_basis_dnf",
-                "output_fp",
-            ],
-            p=[0.26, 0.22, 0.16, 0.14, 0.10, 0.08, 0.04],
-        )
-    )
+def sample_query_candidate(
+    rng: np.random.Generator,
+    n_concepts: int,
+    basis_hi: np.ndarray,
+    basis_lo: np.ndarray,
+    n_classes: int,
+    query_mode: str,
+) -> tuple[str, tuple[tuple[Literal, ...], ...]]:
+    if query_mode == "external":
+        families = ["concept_class_error", "concept_confusion", "output_fp", "confidence_error", "class_confusion"]
+        probs = [0.34, 0.30, 0.14, 0.12, 0.10]
+    elif query_mode == "basis":
+        families = ["basis_class_error", "basis_confusion", "basis_pair_error", "random_basis_dnf"]
+        probs = [0.36, 0.30, 0.22, 0.12]
+    else:
+        families = [
+            "basis_class_error",
+            "basis_confusion",
+            "basis_pair_error",
+            "concept_class_error",
+            "concept_confusion",
+            "random_basis_dnf",
+            "output_fp",
+        ]
+        probs = [0.26, 0.22, 0.16, 0.14, 0.10, 0.08, 0.04]
+    family = str(rng.choice(families, p=probs))
     concept = int(rng.integers(0, n_concepts))
     if family == "basis_class_error":
-        c = int(rng.integers(0, 10))
+        c = int(rng.integers(0, n_classes))
         return family, ((basis_literal(rng, basis_hi, basis_lo), Literal("label_in", (c,)), Literal("error")),)
     if family == "basis_confusion":
-        a = int(rng.integers(0, 10))
-        b = int(rng.integers(0, 9))
+        a = int(rng.integers(0, n_classes))
+        b = int(rng.integers(0, n_classes - 1))
         if b >= a:
             b += 1
         return family, ((basis_literal(rng, basis_hi, basis_lo), Literal("label_in", (a,)), Literal("pred_in", (b,))),)
@@ -617,18 +669,30 @@ def sample_query_candidate(rng: np.random.Generator, n_concepts: int, basis_hi: 
         lit2 = basis_literal(rng, basis_hi, basis_lo)
         return family, ((lit1, lit2, Literal("error")),)
     if family == "concept_class_error":
-        c = int(rng.integers(0, 10))
+        c = int(rng.integers(0, n_classes))
         return family, ((Literal("concept", concept=concept), Literal("label_in", (c,)), Literal("error")),)
     if family == "concept_confusion":
-        a = int(rng.integers(0, 10))
-        b = int(rng.integers(0, 9))
+        a = int(rng.integers(0, n_classes))
+        b = int(rng.integers(0, n_classes - 1))
         if b >= a:
             b += 1
         return family, ((Literal("concept", concept=concept), Literal("label_in", (a,)), Literal("pred_in", (b,))),)
     if family == "output_fp":
-        b = int(rng.integers(0, 10))
+        b = int(rng.integers(0, n_classes))
         t = float(rng.choice((0.70, 0.85)))
         return family, ((Literal("pred_in", (b,)), Literal("label_not_in", (b,)), Literal("confidence_gt", threshold=t)),)
+    if family == "confidence_error":
+        t = float(rng.choice((0.50, 0.70, 0.85)))
+        if rng.random() < 0.5:
+            c = int(rng.integers(0, n_classes))
+            return family, ((Literal("label_in", (c,)), Literal("confidence_gt", threshold=t), Literal("error")),)
+        return family, ((Literal("confidence_gt", threshold=t), Literal("error")),)
+    if family == "class_confusion":
+        a = int(rng.integers(0, n_classes))
+        b = int(rng.integers(0, n_classes - 1))
+        if b >= a:
+            b += 1
+        return family, ((Literal("label_in", (a,)), Literal("pred_in", (b,))),)
 
     clauses = []
     for _ in range(int(rng.integers(1, 3))):
@@ -636,20 +700,32 @@ def sample_query_candidate(rng: np.random.Generator, n_concepts: int, basis_hi: 
         if rng.random() < 0.35:
             lits.append(Literal("concept", concept=int(rng.integers(0, n_concepts))))
         if rng.random() < 0.65:
-            lits.append(Literal("label_in", (int(rng.integers(0, 10)),)))
+            lits.append(Literal("label_in", (int(rng.integers(0, n_classes)),)))
         if rng.random() < 0.70:
             lits.append(Literal("error"))
         else:
-            lits.append(Literal("pred_in", (int(rng.integers(0, 10)),)))
+            lits.append(Literal("pred_in", (int(rng.integers(0, n_classes)),)))
         clauses.append(tuple(lits))
     return family, tuple(clauses)
 
 
-def select_queries(select: Collected, n_concepts: int, basis_hi: np.ndarray, basis_lo: np.ndarray, count: int, rng: np.random.Generator, rate_min: float, rate_max: float, max_candidates: int) -> list[Query]:
+def select_queries(
+    select: Collected,
+    n_concepts: int,
+    basis_hi: np.ndarray,
+    basis_lo: np.ndarray,
+    count: int,
+    rng: np.random.Generator,
+    rate_min: float,
+    rate_max: float,
+    max_candidates: int,
+    n_classes: int,
+    query_mode: str,
+) -> list[Query]:
     queries: list[Query] = []
     seen: set[str] = set()
     for _ in range(max_candidates):
-        family, clauses = sample_query_candidate(rng, n_concepts, basis_hi, basis_lo)
+        family, clauses = sample_query_candidate(rng, n_concepts, basis_hi, basis_lo, n_classes, query_mode)
         q = Query(-1, family, clauses, 0.0)
         sig = q.signature()
         if sig in seen:
@@ -789,6 +865,29 @@ class SparseDictionary:
         return self.components_[k] * self.scaler.scale_
 
 
+class RandomSparseDictionary(SparseDictionary):
+    def fit(self, h: np.ndarray) -> "RandomSparseDictionary":
+        z = self.scaler.fit_transform(h)
+        rng = np.random.default_rng(self.seed)
+        comps = rng.normal(size=(self.n_components, z.shape[1])).astype(np.float32)
+        alpha = float(np.clip(self.alpha, 0.0, 0.99))
+        min_keep = max(4, comps.shape[1] // 32)
+        sparse = np.zeros_like(comps)
+        for i, comp in enumerate(comps):
+            abs_comp = np.abs(comp)
+            thresh = alpha * float(abs_comp.max())
+            mask = abs_comp >= thresh
+            if int(mask.sum()) < min_keep:
+                idx = np.argsort(abs_comp)[-min_keep:]
+                sparse[i, idx] = comp[idx]
+            else:
+                sparse[i, mask] = comp[mask]
+        norms = np.linalg.norm(sparse, axis=1, keepdims=True) + 1e-8
+        self.components_ = sparse / norms
+        self.pca = None
+        return self
+
+
 def sparse_diagnostics(h: np.ndarray, dictionary: SparseDictionary, seed: int) -> dict[str, float]:
     rng = rng_for("dictionary_diag", seed)
     idx = rng.choice(len(h), size=min(6000, len(h)), replace=False)
@@ -894,7 +993,57 @@ class SparseCodeTransform:
         return self.expand(codes, self.q_lo, self.q_hi)
 
 
-def fit_atom_bank(method: str, build: Collected, n_concepts: int, n_basis: int, basis_hi: np.ndarray, basis_lo: np.ndarray, seed: int, dictionary: SparseDictionary | None = None) -> AtomBank:
+class PCAFeatureTransform:
+    def __init__(self, scaler: StandardScaler, pca: PCA, q_lo: np.ndarray, q_hi: np.ndarray) -> None:
+        self.scaler = scaler
+        self.pca = pca
+        self.q_lo = q_lo
+        self.q_hi = q_hi
+
+    @classmethod
+    def fit(cls, h: np.ndarray, n_components: int, seed: int) -> tuple["PCAFeatureTransform", np.ndarray]:
+        scaler = StandardScaler()
+        z = scaler.fit_transform(h)
+        pca = PCA(n_components=min(n_components, z.shape[0], z.shape[1]), random_state=seed)
+        codes = pca.fit_transform(z)
+        q_lo = np.quantile(codes, 0.10, axis=0)
+        q_hi = np.quantile(codes, 0.90, axis=0)
+        return cls(scaler, pca, q_lo, q_hi), SparseCodeTransform.expand(codes, q_lo, q_hi)
+
+    def __call__(self, collected: Collected) -> np.ndarray:
+        codes = self.pca.transform(self.scaler.transform(collected.internal))
+        return SparseCodeTransform.expand(codes, self.q_lo, self.q_hi)
+
+
+def supervised_query_features(collected: Collected) -> np.ndarray:
+    return np.concatenate([collected.internal, output_features(collected), collected.attr_values], axis=1).astype(np.float32)
+
+
+class QueryRiskScorer:
+    def __init__(self, model: object) -> None:
+        self.model = model
+
+    def score(self, collected: Collected) -> np.ndarray:
+        return np.clip(self.model.predict_proba(supervised_query_features(collected))[:, 1], 0.0, 1.0)
+
+
+def fit_query_risk_scorer(build: Collected, query: Query, seed: int) -> QueryRiskScorer:
+    event = query_mask(build, query).astype(int)
+    model = fit_rf_classifier(supervised_query_features(build), event, 2, seed)
+    return QueryRiskScorer(model)
+
+
+def fit_atom_bank(
+    method: str,
+    build: Collected,
+    n_concepts: int,
+    n_basis: int,
+    n_classes: int,
+    basis_hi: np.ndarray,
+    basis_lo: np.ndarray,
+    seed: int,
+    dictionary: SparseDictionary | None = None,
+) -> AtomBank:
     if method == "sparse_internal":
         if dictionary is None:
             raise ValueError("dictionary required")
@@ -914,6 +1063,22 @@ def fit_atom_bank(method: str, build: Collected, n_concepts: int, n_basis: int, 
         x0, scaler, q_lo, q_hi = augment_tabular_features(raw_fn(build))
         feature_fn = TabularTransform(raw_fn, scaler, q_lo, q_hi)
         x = x0
+    elif method == "embedding_comp":
+        raw_fn = lambda c: c.internal
+        x0, scaler, q_lo, q_hi = augment_tabular_features(raw_fn(build))
+        feature_fn = TabularTransform(raw_fn, scaler, q_lo, q_hi)
+        x = x0
+    elif method == "pca_comp":
+        transform, x = PCAFeatureTransform.fit(build.internal, n_basis, seed)
+        feature_fn = transform
+    elif method == "random_comp":
+        random_dictionary = RandomSparseDictionary(n_basis, 0.35, seed).fit(build.internal)
+        codes = random_dictionary.transform(build.internal)
+        q_lo = np.quantile(codes, 0.10, axis=0)
+        q_hi = np.quantile(codes, 0.90, axis=0)
+        transform = SparseCodeTransform(random_dictionary, q_lo, q_hi)
+        feature_fn = transform
+        x = transform(build)
     else:
         raise ValueError(method)
 
@@ -925,8 +1090,8 @@ def fit_atom_bank(method: str, build: Collected, n_concepts: int, n_basis: int, 
     heads: dict[str, object] = {
         "n_concepts": n_concepts,
         "n_basis": n_basis,
-        "label": fit_fn(x, labels, 10, seed + 1),
-        "pred": fit_fn(x, pred, 10, seed + 2),
+        "label": fit_fn(x, labels, n_classes, seed + 1),
+        "pred": fit_fn(x, pred, n_classes, seed + 2),
         "error": fit_fn(x, error, 2, seed + 3),
     }
     for i, t in enumerate(THRESHOLDS):
@@ -1191,32 +1356,37 @@ def intervention_analysis(
 # -----------------------------
 
 
-def run_one_model(args: argparse.Namespace, seed: int, width: int) -> dict[str, list[dict[str, object]]]:
+def run_one_model(args: argparse.Namespace, seed: int, width: int, dictionary_seed: int) -> dict[str, list[dict[str, object]]]:
     source = build_source(args.dataset)
     dataset_key = source.name
-    print(f"[{dataset_key}/width={width}/seed={seed}] training", flush=True)
+    run_key = f"{dataset_key}/w{width}/m{seed}/d{dictionary_seed}"
+    print(f"[{run_key}] training", flush=True)
     model, train_info = train_model(source, seed, args.train_n, args.epochs, width, args.model_type, args.use_public_weights, args.freeze_backbone)
     concept_calib_images, _ = source.sample_eval_np(args.concept_calib_n, rng_for(dataset_key, seed, width, "concept_calib"))
     concept_spec = ConceptSpec.fit(concept_calib_images)
 
     build = collect(source, model, concept_spec, args.build_n, rng_for(dataset_key, seed, width, "build"))
-    dictionary = SparseDictionary(args.dictionary_components, args.dictionary_alpha, seed + width * 1000).fit(build.internal)
+    dict_fit_seed = seed + width * 1000 + dictionary_seed * 100000
+    dictionary = SparseDictionary(args.dictionary_components, args.dictionary_alpha, dict_fit_seed).fit(build.internal)
     attach_basis(build, dictionary)
     basis_hi = np.quantile(build.basis_codes, 0.75, axis=0)
     basis_lo = np.quantile(build.basis_codes, 0.25, axis=0)
-    dict_diag = sparse_diagnostics(build.internal, dictionary, seed + width * 1000)
-    banks = {
-        "sparse_internal": fit_atom_bank("sparse_internal", build, len(concept_spec.names), args.dictionary_components, basis_hi, basis_lo, seed + 100, dictionary),
-        "output_comp": fit_atom_bank("output_comp", build, len(concept_spec.names), args.dictionary_components, basis_hi, basis_lo, seed + 200, dictionary=None),
-        "input_concept_comp": fit_atom_bank("input_concept_comp", build, len(concept_spec.names), args.dictionary_components, basis_hi, basis_lo, seed + 300, dictionary=None),
-    }
+    dict_diag = sparse_diagnostics(build.internal, dictionary, dict_fit_seed)
     n_classes = len(source.class_names)
+    banks = {
+        "sparse_internal": fit_atom_bank("sparse_internal", build, len(concept_spec.names), args.dictionary_components, n_classes, basis_hi, basis_lo, seed + 100, dictionary),
+        "output_comp": fit_atom_bank("output_comp", build, len(concept_spec.names), args.dictionary_components, n_classes, basis_hi, basis_lo, seed + 200, dictionary=None),
+        "input_concept_comp": fit_atom_bank("input_concept_comp", build, len(concept_spec.names), args.dictionary_components, n_classes, basis_hi, basis_lo, seed + 300, dictionary=None),
+        "embedding_comp": fit_atom_bank("embedding_comp", build, len(concept_spec.names), args.dictionary_components, n_classes, basis_hi, basis_lo, seed + 400, dictionary=None),
+        "pca_comp": fit_atom_bank("pca_comp", build, len(concept_spec.names), args.dictionary_components, n_classes, basis_hi, basis_lo, seed + 500, dictionary=None),
+        "random_comp": fit_atom_bank("random_comp", build, len(concept_spec.names), args.dictionary_components, n_classes, basis_hi, basis_lo, seed + 600 + dictionary_seed * 1000, dictionary=None),
+    }
     label_priors = np.bincount(build.labels, minlength=n_classes).astype(float) / len(build.labels)
     concept_priors = build.concepts.mean(axis=0)
     basis_high_priors = (build.basis_codes >= basis_hi).mean(axis=0)
     basis_low_priors = (build.basis_codes <= basis_lo).mean(axis=0)
 
-    select = collect(source, model, concept_spec, args.select_n, rng_for(dataset_key, seed, width, "select"))
+    select = collect(source, model, concept_spec, args.select_n, rng_for(dataset_key, seed, width, dictionary_seed, "select"))
     attach_basis(select, dictionary)
     queries = select_queries(
         select,
@@ -1224,30 +1394,33 @@ def run_one_model(args: argparse.Namespace, seed: int, width: int) -> dict[str, 
         basis_hi,
         basis_lo,
         args.query_count,
-        rng_for(dataset_key, seed, width, "query_gen"),
+        rng_for(dataset_key, seed, width, dictionary_seed, "query_gen"),
         args.rate_min,
         args.rate_max,
         args.max_candidates,
+        n_classes,
+        args.query_mode,
     )
     if len(queries) < min(args.query_count, max(4, args.query_count // 3)):
         raise RuntimeError(f"only selected {len(queries)} queries; relax rarity band or increase candidates")
-    print(f"[{dataset_key}/width={width}/seed={seed}] selected {len(queries)} queries", flush=True)
+    print(f"[{run_key}] selected {len(queries)} queries", flush=True)
+    per_query_scorers = {q.query_id: fit_query_risk_scorer(build, q, seed + 10_000 + q.query_id) for q in queries}
 
-    ref = collect(source, model, concept_spec, args.ref_n, rng_for(dataset_key, seed, width, "reference"))
-    risk_eval = collect(source, model, concept_spec, args.risk_eval_n, rng_for(dataset_key, seed, width, "risk_eval"))
+    ref = collect(source, model, concept_spec, args.ref_n, rng_for(dataset_key, seed, width, dictionary_seed, "reference"))
+    risk_eval = collect(source, model, concept_spec, args.risk_eval_n, rng_for(dataset_key, seed, width, dictionary_seed, "risk_eval"))
     attach_basis(ref, dictionary)
     attach_basis(risk_eval, dictionary)
     risk_atoms = {m: b.atoms(risk_eval) for m, b in banks.items()}
-    intervention_pool = collect(source, model, concept_spec, args.intervention_n, rng_for(dataset_key, seed, width, "intervention"))
+    intervention_pool = collect(source, model, concept_spec, args.intervention_n, rng_for(dataset_key, seed, width, dictionary_seed, "intervention"))
     attach_basis(intervention_pool, dictionary)
 
     costs: list[dict[str, object]] = []
     risk_rows: list[dict[str, object]] = []
     runs: list[dict[str, object]] = []
-    dict_rows = [{"seed": seed, "width": width, **train_info, **dict_diag}]
+    dict_rows = [{"seed": seed, "width": width, "dictionary_seed": dictionary_seed, **train_info, **dict_diag}]
     interventions = intervention_analysis(model, dictionary, intervention_pool, seed, source.class_names)
     for row in interventions:
-        row.update({"seed": seed, "width": width})
+        row.update({"seed": seed, "width": width, "dictionary_seed": dictionary_seed})
 
     refs: dict[int, tuple[float, float]] = {}
     for query in queries:
@@ -1262,9 +1435,10 @@ def run_one_model(args: argparse.Namespace, seed: int, width: int) -> dict[str, 
                 {
                     "seed": seed,
                     "width": width,
+                    "dictionary_seed": dictionary_seed,
                     "query": query.query_id,
                     "family": query.family,
-                    "model_query_id": f"{dataset_key}/w{width}/{seed}/{query.query_id}",
+                    "model_query_id": f"{run_key}/{query.query_id}",
                     "method": method,
                     "reference_rate": ref_rate,
                     "select_rate": query.select_rate,
@@ -1277,9 +1451,10 @@ def run_one_model(args: argparse.Namespace, seed: int, width: int) -> dict[str, 
             {
                 "seed": seed,
                 "width": width,
+                "dictionary_seed": dictionary_seed,
                 "query": query.query_id,
                 "family": query.family,
-                "model_query_id": f"{dataset_key}/w{width}/{seed}/{query.query_id}",
+                "model_query_id": f"{run_key}/{query.query_id}",
                 "method": "output_active",
                 "reference_rate": ref_rate,
                 "select_rate": query.select_rate,
@@ -1287,13 +1462,30 @@ def run_one_model(args: argparse.Namespace, seed: int, width: int) -> dict[str, 
                 **ranking_metrics(out_score, risk_event),
             }
         )
+        per_query_score = per_query_scorers[query.query_id].score(risk_eval)
+        risk_rows.append(
+            {
+                "seed": seed,
+                "width": width,
+                "dictionary_seed": dictionary_seed,
+                "query": query.query_id,
+                "family": query.family,
+                "model_query_id": f"{run_key}/{query.query_id}",
+                "method": "per_query_rf",
+                "reference_rate": ref_rate,
+                "select_rate": query.select_rate,
+                "uses_concept": query.uses_concept(),
+                **ranking_metrics(per_query_score, risk_event),
+            }
+        )
         costs.append(
             {
                 "seed": seed,
                 "width": width,
+                "dictionary_seed": dictionary_seed,
                 "query": query.query_id,
                 "family": query.family,
-                "model_query_id": f"{dataset_key}/w{width}/{seed}/{query.query_id}",
+                "model_query_id": f"{run_key}/{query.query_id}",
                 "select_rate": query.select_rate,
                 "reference_rate": ref_rate,
                 "reference_ci_half_width": ref_ci,
@@ -1302,15 +1494,17 @@ def run_one_model(args: argparse.Namespace, seed: int, width: int) -> dict[str, 
             }
         )
 
-    methods = ["mc", "random_stratified", "output_active", "ase_output", *banks.keys()]
+    methods = ["mc", "random_stratified", "output_active", "ase_output", "embedding_ase", "per_query_rf", *banks.keys()]
     for rep in range(args.reps):
-        eval_pool = collect(source, model, concept_spec, args.pool_n, rng_for(dataset_key, seed, width, "eval_pool", rep))
-        mc_pool = collect(source, model, concept_spec, max(args.budgets), rng_for(dataset_key, seed, width, "mc_pool", rep))
+        eval_pool = collect(source, model, concept_spec, args.pool_n, rng_for(dataset_key, seed, width, dictionary_seed, "eval_pool", rep))
+        mc_pool = collect(source, model, concept_spec, max(args.budgets), rng_for(dataset_key, seed, width, dictionary_seed, "mc_pool", rep))
         attach_basis(eval_pool, dictionary)
         attach_basis(mc_pool, dictionary)
         eval_atoms = {m: b.atoms(eval_pool) for m, b in banks.items()}
         output_feat_eval = output_features(eval_pool)
+        embedding_ase_feat_eval = supervised_query_features(eval_pool)
         output_active_scores = {q.query_id: output_active_score(eval_pool, q, concept_priors, basis_high_priors, basis_low_priors, label_priors) for q in queries}
+        per_query_scores = {q.query_id: per_query_scorers[q.query_id].score(eval_pool) for q in queries}
         score_cache: dict[tuple[str, int], np.ndarray] = {}
         for q in queries:
             for m in banks:
@@ -1321,13 +1515,13 @@ def run_one_model(args: argparse.Namespace, seed: int, width: int) -> dict[str, 
             ref_rate, ref_ci = refs[query.query_id]
             for budget in args.budgets:
                 for method in methods:
-                    est_rng = rng_for(dataset_key, seed, width, "estimate", method, query.query_id, rep, budget)
+                    est_rng = rng_for(dataset_key, seed, width, dictionary_seed, "estimate", method, query.query_id, rep, budget)
                     if method == "mc":
                         estimate = mc_estimate(mc_event, budget, est_rng)
                         build_label_cost = 0
                         forward_cost = budget
                     elif method == "random_stratified":
-                        scores = rng_for(dataset_key, seed, width, "rand_score", query.query_id, rep, budget).random(len(eval_event))
+                        scores = rng_for(dataset_key, seed, width, dictionary_seed, "rand_score", query.query_id, rep, budget).random(len(eval_event))
                         estimate = stratified_estimate(scores, eval_event, budget, est_rng)
                         build_label_cost = 0
                         forward_cost = args.pool_n
@@ -1339,6 +1533,14 @@ def run_one_model(args: argparse.Namespace, seed: int, width: int) -> dict[str, 
                         estimate = ase_output_estimate(output_feat_eval, eval_event, budget, est_rng)
                         build_label_cost = 0
                         forward_cost = args.pool_n
+                    elif method == "embedding_ase":
+                        estimate = ase_output_estimate(embedding_ase_feat_eval, eval_event, budget, est_rng)
+                        build_label_cost = 0
+                        forward_cost = args.pool_n
+                    elif method == "per_query_rf":
+                        estimate = stratified_estimate(per_query_scores[query.query_id], eval_event, budget, est_rng)
+                        build_label_cost = args.build_n
+                        forward_cost = args.build_n + args.pool_n
                     else:
                         estimate = stratified_estimate(score_cache[(method, query.query_id)], eval_event, budget, est_rng)
                         build_label_cost = args.build_n
@@ -1347,9 +1549,10 @@ def run_one_model(args: argparse.Namespace, seed: int, width: int) -> dict[str, 
                         {
                             "seed": seed,
                             "width": width,
+                            "dictionary_seed": dictionary_seed,
                             "query": query.query_id,
                             "family": query.family,
-                            "model_query_id": f"{dataset_key}/w{width}/{seed}/{query.query_id}",
+                            "model_query_id": f"{run_key}/{query.query_id}",
                             "method": method,
                             "budget": budget,
                             "rep": rep,
@@ -1461,9 +1664,10 @@ def risk_summary(risk_df: pd.DataFrame) -> pd.DataFrame:
 
 def break_even(run_df: pd.DataFrame, build_n: int) -> pd.DataFrame:
     max_q = int(run_df["query"].max()) + 1
+    reusable_methods = {"sparse_internal", "output_comp", "input_concept_comp", "embedding_comp", "pca_comp", "random_comp"}
     rows = []
     for budget in sorted(run_df["budget"].unique()):
-        for method in sorted(m for m in run_df["method"].unique() if m in {"sparse_internal", "output_comp", "input_concept_comp"}):
+        for method in sorted(m for m in run_df["method"].unique() if m in reusable_methods):
             first = math.nan
             final_ratio = math.nan
             final_cost = math.nan
@@ -1494,13 +1698,84 @@ def break_even(run_df: pd.DataFrame, build_n: int) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(["budget", "final_rmse_ratio_vs_label_matched_mc"])
 
 
+def benchmark_verdict(ci: pd.DataFrame, be: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
+    strong_methods = ["output_active", "ase_output", "embedding_ase", "embedding_comp", "output_comp", "per_query_rf"]
+    ablation_methods = ["pca_comp", "random_comp"]
+    rows = []
+    for budget in sorted(ci["budget"].unique()):
+        budget_ci = ci[ci["budget"] == budget].set_index("method")
+        if "sparse_internal" not in budget_ci.index:
+            continue
+        sparse = budget_ci.loc["sparse_internal"]
+        sparse_ratio = float(sparse["rmse_ratio_vs_mc"])
+        sparse_ci_high = float(sparse["rmse_ratio_ci_high"])
+        available_strong = [m for m in strong_methods if m in budget_ci.index]
+        available_ablation = [m for m in ablation_methods if m in budget_ci.index]
+        best_strong = min((float(budget_ci.loc[m, "rmse_ratio_vs_mc"]) for m in available_strong), default=math.nan)
+        best_ablation = min((float(budget_ci.loc[m, "rmse_ratio_vs_mc"]) for m in available_ablation), default=math.nan)
+        sparse_be_rows = be[(be["budget"] == budget) & (be["method"] == "sparse_internal")]
+        if len(sparse_be_rows):
+            sparse_be = sparse_be_rows.iloc[0]
+            first_break_even = float(sparse_be["first_query_count_beating_label_matched_mc"]) if not pd.isna(sparse_be["first_query_count_beating_label_matched_mc"]) else math.nan
+            final_label_matched_ratio = float(sparse_be["final_rmse_ratio_vs_label_matched_mc"])
+        else:
+            first_break_even = math.nan
+            final_label_matched_ratio = math.nan
+        beats_mc_with_ci = sparse_ci_high < args.success_ci_max
+        strong_baseline_win = bool(available_strong) and sparse_ratio < best_strong
+        ablation_gap = bool(available_ablation) and best_ablation / max(sparse_ratio, 1e-12) >= args.ablation_gap
+        amortized = (not math.isnan(first_break_even)) and first_break_even <= args.max_break_even_queries and final_label_matched_ratio < 1.0
+        success = sparse_ratio <= args.success_ratio_threshold and beats_mc_with_ci and strong_baseline_win and ablation_gap and amortized
+        disproof = (
+            sparse_ratio >= 1.0
+            and (math.isnan(first_break_even) or final_label_matched_ratio >= 1.0)
+            and (not available_strong or sparse_ratio >= best_strong * 0.98)
+            and (not available_ablation or best_ablation / max(sparse_ratio, 1e-12) < args.ablation_gap)
+        )
+        if success:
+            verdict = "supports"
+        elif disproof:
+            verdict = "disconfirms"
+        else:
+            verdict = "inconclusive"
+        rows.append(
+            {
+                "budget": budget,
+                "query_mode": args.query_mode,
+                "sparse_rmse_ratio_vs_mc": sparse_ratio,
+                "sparse_ci_high": sparse_ci_high,
+                "best_strong_baseline_ratio": best_strong,
+                "best_pca_or_random_ablation_ratio": best_ablation,
+                "first_break_even_query_count": first_break_even,
+                "final_label_matched_ratio": final_label_matched_ratio,
+                "criterion_sparse_ratio_at_most": args.success_ratio_threshold,
+                "criterion_ci_high_below": args.success_ci_max,
+                "criterion_max_break_even_queries": args.max_break_even_queries,
+                "criterion_ablation_gap": args.ablation_gap,
+                "passes_ci": beats_mc_with_ci,
+                "passes_strong_baselines": strong_baseline_win,
+                "passes_ablation_gap": ablation_gap,
+                "passes_amortization": amortized,
+                "success": success,
+                "disproof": disproof,
+                "verdict": verdict,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def write_figures(ci: pd.DataFrame, be: pd.DataFrame, fam: pd.DataFrame, risk: pd.DataFrame, inter: pd.DataFrame, dataset_label: str) -> None:
     method_labels = {
         "sparse_internal": "sparse internal",
         "output_comp": "output comp",
         "input_concept_comp": "input concepts",
+        "embedding_comp": "embedding comp",
+        "pca_comp": "PCA comp",
+        "random_comp": "random comp",
         "output_active": "output active",
         "ase_output": "ASE output",
+        "embedding_ase": "ASE embedding",
+        "per_query_rf": "per-query RF",
         "random_stratified": "random strata",
         "mc": "MC",
     }
@@ -1508,14 +1783,20 @@ def write_figures(ci: pd.DataFrame, be: pd.DataFrame, fam: pd.DataFrame, risk: p
         "sparse_internal": "#bf5b17",
         "output_comp": "#386cb0",
         "input_concept_comp": "#1b9e77",
+        "embedding_comp": "#a6761d",
+        "pca_comp": "#66a61e",
+        "random_comp": "#999999",
         "output_active": "#7570b3",
         "ase_output": "#e7298a",
+        "embedding_ase": "#d95f02",
+        "per_query_rf": "#000000",
         "random_stratified": "#777777",
         "mc": "#222222",
     }
     main_budget = int(ci["budget"].max())
     main = ci[ci["budget"] == main_budget]
-    methods = ["sparse_internal", "output_comp", "output_active", "ase_output", "input_concept_comp", "random_stratified"]
+    methods = ["sparse_internal", "output_comp", "embedding_comp", "pca_comp", "random_comp", "output_active", "ase_output", "embedding_ase", "input_concept_comp", "per_query_rf", "random_stratified"]
+    methods = [m for m in methods if m in set(main["method"])]
     main = main.set_index("method").loc[methods].reset_index()
     fig, ax = plt.subplots(figsize=(8.8, 3.8))
     x = np.arange(len(main))
@@ -1636,9 +1917,20 @@ def write_bib() -> None:
     )
 
 
+def dataset_label_for_args(args: argparse.Namespace) -> str:
+    labels = {
+        "fashion_mnist": "Fashion-MNIST from OpenML",
+        "cifar10": "CIFAR-10 (torchvision)",
+        "cifar100": "CIFAR-100 (torchvision)",
+    }
+    if getattr(args, "datasets", None):
+        return " + ".join(labels[d] for d in args.datasets)
+    return labels[args.dataset]
+
+
 def write_report(args: argparse.Namespace, ci: pd.DataFrame, summary: pd.DataFrame, fam: pd.DataFrame, risk: pd.DataFrame, be: pd.DataFrame, dict_df: pd.DataFrame, inter: pd.DataFrame, cost: pd.DataFrame) -> None:
     main_budget = max(args.budgets)
-    dataset_label = {"fashion_mnist": "Fashion-MNIST from OpenML", "cifar10": "CIFAR-10 (torchvision)"}[args.dataset]
+    dataset_label = dataset_label_for_args(args)
     if args.model_type == "cnn":
         model_label = "CNN"
     elif args.use_public_weights:
@@ -1664,7 +1956,7 @@ Date: 2026-05-22
 
 This experiment tests whether one reusable sparse activation basis can support many rare failure-rate audits without training a new risk model per query. A {model_label} is trained on {dataset_label}. For each trained model, a sparse dictionary is learned once from penultimate activations, reusable atom heads are fit once, and audit queries are sampled from fixed family weights plus a rarity filter, dominated by non-output-defined sparse-basis and image-concept conditions. Each query is compiled over the same atom bank and estimated by stratified sampling.
 
-At budget `{main_budget}`, the sparse internal compositor has an RMSE ratio of `{float(main[main.method == 'sparse_internal']['rmse_ratio_vs_mc'].iloc[0]):.3f}` relative to Monte Carlo, with a model-query bootstrap interval `{float(main[main.method == 'sparse_internal']['rmse_ratio_ci_low'].iloc[0]):.3f}` to `{float(main[main.method == 'sparse_internal']['rmse_ratio_ci_high'].iloc[0]):.3f}`. It is the strongest method in the aggregate, beating output-only active testing, output-only learned composition, output-only active surrogate estimation, random stratification, and the hand-engineered input-concept compositor. Sparse-basis activation interventions also move targeted class-confusion rates in the predicted direction, providing a sanity check that the basis is not only an offline ranking device.
+At budget `{main_budget}`, the sparse internal compositor has an RMSE ratio of `{float(main[main.method == 'sparse_internal']['rmse_ratio_vs_mc'].iloc[0]):.3f}` relative to Monte Carlo, with a model-query bootstrap interval `{float(main[main.method == 'sparse_internal']['rmse_ratio_ci_low'].iloc[0]):.3f}` to `{float(main[main.method == 'sparse_internal']['rmse_ratio_ci_high'].iloc[0]):.3f}`. The run also reports output-only, embedding, PCA, random-dictionary, and per-query supervised baselines, plus a verdict table that applies the pre-registered support and disproof criteria. Sparse-basis activation interventions provide a directional sanity check that the basis is not only an offline ranking device.
 
 ## Idea
 
@@ -1709,7 +2001,7 @@ RMSE ratios are relative to same-budget Monte Carlo. Intervals bootstrap model-q
 
 ![Main ratios](experiments/results/sparse_concept_main_ratios.png)
 
-The sparse internal basis is the strongest reusable auditor in the aggregate for this basis-conditioned workload. The key comparison is not just against MC; it also beats output-only active testing and output-only learned composition, which were the strongest baselines in the earlier digit experiments. The hand-engineered input-concept compositor helps on image-concept queries but cannot directly observe the learned sparse-basis predicates, so it is weaker on the final query workload.
+The key comparison is not just against MC. The benchmark also includes output-only active testing, output-only learned composition, output-only and embedding active surrogate estimation, hand-engineered input concepts, dense PCA features, random sparse projections, and per-query supervised risk models.
 
 ## Build-Cost Amortization
 
@@ -1717,7 +2009,7 @@ Reusable atom heads require build labels. The table compares each reusable metho
 
 {markdown_table(be_display)}
 
-The sparse internal method crosses label-cost break-even at the tested audit scale for budget `{main_budget}`. This is the amortization point: the expensive basis is justified when reused across a query workload, not for one-off audits.
+This is the amortization test: the expensive basis is justified only if it is reused across enough related audits to beat label-matched sampling.
 
 ## Query-Family Results
 
@@ -1725,7 +2017,7 @@ The sparse internal method crosses label-cost break-even at the tested audit sca
 
 ![Family breakdown](experiments/results/sparse_concept_family_breakdown.png)
 
-The family-level table shows why the aggregate result is not a trivial output-confidence effect. Sparse internal composition is strongest on basis-conditioned class errors and basis-pair errors. Output-only methods remain strong on output-defined false positives and some confusion queries, which is expected because those events directly mention predicted classes or confidence.
+The family-level table separates basis-conditioned, image-concept, and output-defined queries. This is where to check whether any aggregate gain is coming from the sparse explanation itself or from generic confidence/error ranking.
 
 ## Dictionary Quality
 
@@ -1816,16 +2108,23 @@ def analyze_and_write(args: argparse.Namespace, started: float) -> None:
     fam = family_summary(run_df)
     risk = risk_summary(risk_df)
     be = break_even(run_df, args.build_n)
+    verdict = benchmark_verdict(ci, be, args)
     summary.to_csv(RESULTS_DIR / "sparse_concept_summary.csv", index=False)
     ci.to_csv(RESULTS_DIR / "sparse_concept_ci.csv", index=False)
     fam.to_csv(RESULTS_DIR / "sparse_concept_family_summary.csv", index=False)
     risk.to_csv(RESULTS_DIR / "sparse_concept_risk_summary.csv", index=False)
     be.to_csv(RESULTS_DIR / "sparse_concept_break_even.csv", index=False)
-    dataset_label = {"fashion_mnist": "Fashion-MNIST", "cifar10": "CIFAR-10"}[args.dataset]
+    verdict.to_csv(RESULTS_DIR / "sparse_concept_verdict.csv", index=False)
+    dataset_label = dataset_label_for_args(args)
     write_figures(ci, be, fam, risk, inter_df, dataset_label)
     write_bib()
     write_report(args, ci, summary, fam, risk, be, dict_df, inter_df, cost_df)
-    payload = {"args": vars(args), "elapsed_seconds": time.perf_counter() - started, "rows": len(run_df)}
+    payload = {
+        "args": vars(args),
+        "elapsed_seconds": time.perf_counter() - started,
+        "rows": len(run_df),
+        "verdicts": verdict.to_dict(orient="records"),
+    }
     (RESULTS_DIR / "sparse_concept_results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(ci.to_string(index=False), flush=True)
     print(be.to_string(index=False), flush=True)
@@ -1834,11 +2133,13 @@ def analyze_and_write(args: argparse.Namespace, started: float) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--dataset", choices=["fashion_mnist", "cifar10"], default="fashion_mnist")
+    p.add_argument("--dataset", choices=["fashion_mnist", "cifar10", "cifar100"], default="fashion_mnist")
+    p.add_argument("--datasets", nargs="+", choices=["fashion_mnist", "cifar10", "cifar100"], default=None)
     p.add_argument("--model-type", choices=["cnn", "resnet18"], default="cnn")
     p.add_argument("--use-public-weights", action="store_true")
     p.add_argument("--freeze-backbone", action="store_true")
     p.add_argument("--seeds", nargs="+", type=int, default=[20260521, 20260522])
+    p.add_argument("--dictionary-seeds", nargs="+", type=int, default=[0])
     p.add_argument("--width", type=int, default=1)
     p.add_argument("--train-n", type=int, default=30000)
     p.add_argument("--epochs", type=int, default=5)
@@ -1853,10 +2154,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-candidates", type=int, default=5000)
     p.add_argument("--rate-min", type=float, default=0.001)
     p.add_argument("--rate-max", type=float, default=0.04)
+    p.add_argument("--query-mode", choices=["mixed", "external", "basis"], default="mixed")
     p.add_argument("--dictionary-components", type=int, default=48)
     p.add_argument("--dictionary-alpha", type=float, default=0.35)
     p.add_argument("--budgets", nargs="+", type=int, default=[512, 2048])
     p.add_argument("--reps", type=int, default=12)
+    p.add_argument("--success-ratio-threshold", type=float, default=0.80)
+    p.add_argument("--success-ci-max", type=float, default=1.0)
+    p.add_argument("--max-break-even-queries", type=int, default=20)
+    p.add_argument("--ablation-gap", type=float, default=1.05)
     return p.parse_args()
 
 
@@ -1869,13 +2175,18 @@ def run() -> None:
     all_costs: list[dict[str, object]] = []
     all_dict: list[dict[str, object]] = []
     all_interventions: list[dict[str, object]] = []
-    for seed in args.seeds:
-        result = run_one_model(args, seed, args.width)
-        all_runs.extend(result["runs"])
-        all_risk.extend(result["risk"])
-        all_costs.extend(result["costs"])
-        all_dict.extend(result["dictionary"])
-        all_interventions.extend(result["interventions"])
+    dataset_names = args.datasets if args.datasets else [args.dataset]
+    for dataset_name in dataset_names:
+        dataset_args = argparse.Namespace(**vars(args))
+        dataset_args.dataset = dataset_name
+        for seed in args.seeds:
+            for dictionary_seed in args.dictionary_seeds:
+                result = run_one_model(dataset_args, seed, args.width, dictionary_seed)
+                all_runs.extend(result["runs"])
+                all_risk.extend(result["risk"])
+                all_costs.extend(result["costs"])
+                all_dict.extend(result["dictionary"])
+                all_interventions.extend(result["interventions"])
     pd.DataFrame(all_runs).to_csv(RESULTS_DIR / "sparse_concept_runs.csv", index=False)
     pd.DataFrame(all_risk).to_csv(RESULTS_DIR / "sparse_concept_risk.csv", index=False)
     pd.DataFrame(all_costs).to_csv(RESULTS_DIR / "sparse_concept_costs.csv", index=False)
