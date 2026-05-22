@@ -13,6 +13,7 @@ env/
 
 data/
 *.log
+*.pid
 
 # Generic outputs from fresh local runs. The archived CIFAR-10 artifacts under
 # experiments/results/stronger/ are small enough to keep in the repo.

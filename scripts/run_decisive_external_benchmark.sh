@@ -11,7 +11,7 @@ export VECLIB_MAXIMUM_THREADS=2
 export NUMEXPR_NUM_THREADS=2
 export PYTHONDONTWRITEBYTECODE=1
 
-exec taskpolicy -b /usr/bin/nice -n 15 .venv/bin/python experiments/src/sparse_concept_rare_event_suite.py \
+exec /usr/bin/nice -n 15 .venv/bin/python experiments/src/sparse_concept_rare_event_suite.py \
   --datasets fashion_mnist cifar10 cifar100 \
   --model-type resnet18 \
   --use-public-weights \
