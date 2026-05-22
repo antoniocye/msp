@@ -77,7 +77,9 @@ The stronger benchmark implements the external-query test proposed in the report
   --max-candidates 20000 \
   --query-mode external \
   --budgets 64 128 256 512 1024 2048 \
-  --reps 8
+  --reps 8 \
+  --torch-threads 2 \
+  --torch-inter-op-threads 1
 ```
 
 The same command is recorded in `experiments/configs/decisive_external_benchmark.json`. The verdict table is written to `experiments/results/sparse_concept_verdict.csv`.

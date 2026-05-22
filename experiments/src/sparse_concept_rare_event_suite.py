@@ -2163,11 +2163,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--success-ci-max", type=float, default=1.0)
     p.add_argument("--max-break-even-queries", type=int, default=20)
     p.add_argument("--ablation-gap", type=float, default=1.05)
+    p.add_argument("--torch-threads", type=int, default=2)
+    p.add_argument("--torch-inter-op-threads", type=int, default=1)
     return p.parse_args()
 
 
 def run() -> None:
     args = parse_args()
+    torch.set_num_threads(max(1, int(args.torch_threads)))
+    torch.set_num_interop_threads(max(1, int(args.torch_inter_op_threads)))
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     all_runs: list[dict[str, object]] = []
