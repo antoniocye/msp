@@ -84,6 +84,12 @@ The stronger benchmark implements the external-query test proposed in the report
 
 The same command is recorded in `experiments/configs/decisive_external_benchmark.json`. The verdict table is written to `experiments/results/sparse_concept_verdict.csv`.
 
+For a low-priority local run with thread caps and logs:
+
+```bash
+scripts/run_decisive_external_benchmark.sh > experiments/results/decisive_external_benchmark.log 2>&1
+```
+
 ## Primary Result
 
 At budget 512 labels per query, the sparse-internal estimator achieved an RMSE ratio of `0.561` relative to same-budget Monte Carlo over 12 rare-failure queries, with a bootstrap interval of `[0.433, 0.753]`. Including the one-time build labels, it crossed label-cost break-even after 5 audited queries in this run.
