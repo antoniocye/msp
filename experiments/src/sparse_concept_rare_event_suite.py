@@ -2131,6 +2131,30 @@ def analyze_and_write(args: argparse.Namespace, started: float) -> None:
     print(f"wrote {PAPER_PATH}", flush=True)
 
 
+def checkpoint_paths(checkpoint_dir: Path, dataset_name: str, width: int, seed: int, dictionary_seed: int) -> dict[str, Path]:
+    stem = f"{dataset_name}_w{width}_m{seed}_d{dictionary_seed}"
+    return {
+        "runs": checkpoint_dir / f"{stem}_runs.csv",
+        "risk": checkpoint_dir / f"{stem}_risk.csv",
+        "costs": checkpoint_dir / f"{stem}_costs.csv",
+        "dictionary": checkpoint_dir / f"{stem}_dictionary.csv",
+        "interventions": checkpoint_dir / f"{stem}_interventions.csv",
+    }
+
+
+def checkpoint_complete(paths: dict[str, Path]) -> bool:
+    return all(path.exists() for path in paths.values())
+
+
+def load_checkpoint(paths: dict[str, Path]) -> dict[str, list[dict[str, object]]]:
+    return {name: pd.read_csv(path).to_dict(orient="records") for name, path in paths.items()}
+
+
+def write_checkpoint(paths: dict[str, Path], result: dict[str, list[dict[str, object]]]) -> None:
+    for name, path in paths.items():
+        pd.DataFrame(result[name]).to_csv(path, index=False)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", choices=["fashion_mnist", "cifar10", "cifar100"], default="fashion_mnist")
@@ -2165,6 +2189,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ablation-gap", type=float, default=1.05)
     p.add_argument("--torch-threads", type=int, default=2)
     p.add_argument("--torch-inter-op-threads", type=int, default=1)
+    p.add_argument("--checkpoint-dir", default=str(RESULTS_DIR / "checkpoints"))
+    p.add_argument("--no-resume", action="store_true")
     return p.parse_args()
 
 
@@ -2180,12 +2206,20 @@ def run() -> None:
     all_dict: list[dict[str, object]] = []
     all_interventions: list[dict[str, object]] = []
     dataset_names = args.datasets if args.datasets else [args.dataset]
+    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     for dataset_name in dataset_names:
         dataset_args = argparse.Namespace(**vars(args))
         dataset_args.dataset = dataset_name
         for seed in args.seeds:
             for dictionary_seed in args.dictionary_seeds:
-                result = run_one_model(dataset_args, seed, args.width, dictionary_seed)
+                paths = checkpoint_paths(checkpoint_dir, dataset_name, args.width, seed, dictionary_seed)
+                if not args.no_resume and checkpoint_complete(paths):
+                    print(f"[{dataset_name}/w{args.width}/m{seed}/d{dictionary_seed}] resuming checkpoint", flush=True)
+                    result = load_checkpoint(paths)
+                else:
+                    result = run_one_model(dataset_args, seed, args.width, dictionary_seed)
+                    write_checkpoint(paths, result)
                 all_runs.extend(result["runs"])
                 all_risk.extend(result["risk"])
                 all_costs.extend(result["costs"])

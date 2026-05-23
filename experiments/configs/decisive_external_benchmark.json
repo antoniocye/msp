@@ -57,7 +57,7 @@
     "--reps",
     "8",
     "--torch-threads",
-    "2",
+    "6",
     "--torch-inter-op-threads",
     "1",
     "--success-ratio-threshold",

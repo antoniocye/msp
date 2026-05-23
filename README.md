@@ -78,17 +78,19 @@ The stronger benchmark implements the external-query test proposed in the report
   --query-mode external \
   --budgets 64 128 256 512 1024 2048 \
   --reps 8 \
-  --torch-threads 2 \
+  --torch-threads 6 \
   --torch-inter-op-threads 1
 ```
 
 The same command is recorded in `experiments/configs/decisive_external_benchmark.json`. The verdict table is written to `experiments/results/sparse_concept_verdict.csv`.
 
-For a low-priority local run with thread caps and logs:
+For a low-priority local run with thread caps, checkpoints, and logs:
 
 ```bash
 scripts/run_decisive_external_benchmark.sh > experiments/results/decisive_external_benchmark.log 2>&1
 ```
+
+The runner uses `BENCH_THREADS` if set; otherwise it uses `logical CPU count - 2`.
 
 ## Primary Result
 

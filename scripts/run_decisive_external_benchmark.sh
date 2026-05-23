@@ -11,7 +11,17 @@ export VECLIB_MAXIMUM_THREADS=2
 export NUMEXPR_NUM_THREADS=2
 export PYTHONDONTWRITEBYTECODE=1
 
-exec /usr/bin/nice -n 15 .venv/bin/python experiments/src/sparse_concept_rare_event_suite.py \
+logical_cpus="$(sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
+bench_threads="${BENCH_THREADS:-$(( logical_cpus > 2 ? logical_cpus - 2 : 1 ))}"
+export OMP_NUM_THREADS="$bench_threads"
+export MKL_NUM_THREADS="$bench_threads"
+export OPENBLAS_NUM_THREADS="$bench_threads"
+export VECLIB_MAXIMUM_THREADS="$bench_threads"
+export NUMEXPR_NUM_THREADS="$bench_threads"
+
+echo "Using ${bench_threads} worker threads on ${logical_cpus} logical CPUs."
+
+exec /usr/bin/nice -n 10 .venv/bin/python experiments/src/sparse_concept_rare_event_suite.py \
   --datasets fashion_mnist cifar10 cifar100 \
   --model-type resnet18 \
   --use-public-weights \
@@ -38,5 +48,5 @@ exec /usr/bin/nice -n 15 .venv/bin/python experiments/src/sparse_concept_rare_ev
   --success-ci-max 1.0 \
   --max-break-even-queries 20 \
   --ablation-gap 1.05 \
-  --torch-threads 2 \
+  --torch-threads "$bench_threads" \
   --torch-inter-op-threads 1
