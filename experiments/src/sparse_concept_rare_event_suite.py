@@ -1853,10 +1853,11 @@ def write_figures(ci: pd.DataFrame, be: pd.DataFrame, fam: pd.DataFrame, risk: p
 
 def write_bib() -> None:
     BIB_PATH.write_text(
-        """@misc{arc2022competing,
+        """@misc{neyman2025competing,
   title = {Competing with sampling},
-  author = {{Alignment Research Center}},
-  year = {2022},
+  author = {Neyman, Eric and Lecomte, Victor and Wu, Wilson and Winer, Michael and Hilton, Jacob and Robinson, George},
+  year = {2025},
+  howpublished = {Alignment Research Center},
   url = {https://www.alignment.org/blog/competing-with-sampling/}
 }
 
