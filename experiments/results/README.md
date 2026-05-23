@@ -13,4 +13,4 @@ The `stronger/cifar10_*` files are the archived result package used by the main 
 | `cifar10_sparse_concept_*png` | figures used by the report |
 | `cifar10_sparse_concept_results.json` | run configuration and row count |
 
-Fresh decisive-benchmark runs also write `sparse_concept_verdict.csv` and include the same verdict rows in `sparse_concept_results.json`.
+Fresh larger-benchmark runs also write `sparse_concept_verdict.csv` and include the same verdict rows in `sparse_concept_results.json`.

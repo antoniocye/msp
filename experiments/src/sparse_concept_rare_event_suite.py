@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import TwoSlopeNorm
 import numpy as np
 import pandas as pd
 import torch
@@ -1764,91 +1765,193 @@ def benchmark_verdict(ci: pd.DataFrame, be: pd.DataFrame, args: argparse.Namespa
     return pd.DataFrame(rows)
 
 
+def _clean_family_label(name: str) -> str:
+    labels = {
+        "basis_class_error": "basis\nclass error",
+        "basis_confusion": "basis\nconfusion",
+        "concept_class_error": "image concept\nclass error",
+        "concept_confusion": "image concept\nconfusion",
+        "random_basis_dnf": "random basis\nDNF",
+        "output_confidence_error": "output confidence\nerror",
+    }
+    return labels.get(name, name.replace("_", "\n"))
+
+
+def _apply_figure_style() -> None:
+    plt.rcParams.update(
+        {
+            "figure.facecolor": "white",
+            "axes.facecolor": "#fcfbf7",
+            "axes.edgecolor": "#313131",
+            "axes.linewidth": 0.8,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "font.family": "DejaVu Sans",
+            "font.size": 9.5,
+            "axes.titlesize": 11.5,
+            "axes.labelsize": 9.5,
+            "xtick.labelsize": 8.5,
+            "ytick.labelsize": 8.5,
+            "legend.fontsize": 8.5,
+            "savefig.facecolor": "white",
+            "savefig.bbox": "tight",
+            "savefig.pad_inches": 0.08,
+        }
+    )
+
+
+def _save_figure(fig: plt.Figure, stem: str) -> None:
+    fig.savefig(RESULTS_DIR / f"{stem}.png", dpi=260)
+    fig.savefig(RESULTS_DIR / f"{stem}.pdf")
+    plt.close(fig)
+
+
 def write_figures(ci: pd.DataFrame, be: pd.DataFrame, fam: pd.DataFrame, risk: pd.DataFrame, inter: pd.DataFrame, dataset_label: str) -> None:
+    _apply_figure_style()
     method_labels = {
-        "sparse_internal": "sparse internal",
-        "output_comp": "output comp",
-        "input_concept_comp": "input concepts",
-        "embedding_comp": "embedding comp",
-        "pca_comp": "PCA comp",
-        "random_comp": "random comp",
-        "output_active": "output active",
+        "sparse_internal": "Sparse internal",
+        "output_comp": "Output composition",
+        "input_concept_comp": "Image concepts",
+        "embedding_comp": "Embedding composition",
+        "pca_comp": "PCA composition",
+        "random_comp": "Random projection",
+        "output_active": "Output active",
         "ase_output": "ASE output",
         "embedding_ase": "ASE embedding",
-        "per_query_rf": "per-query RF",
-        "random_stratified": "random strata",
+        "per_query_rf": "Per-query RF",
+        "random_stratified": "Random strata",
         "mc": "MC",
     }
     colors = {
-        "sparse_internal": "#bf5b17",
-        "output_comp": "#386cb0",
-        "input_concept_comp": "#1b9e77",
-        "embedding_comp": "#a6761d",
-        "pca_comp": "#66a61e",
-        "random_comp": "#999999",
-        "output_active": "#7570b3",
-        "ase_output": "#e7298a",
-        "embedding_ase": "#d95f02",
-        "per_query_rf": "#000000",
-        "random_stratified": "#777777",
+        "sparse_internal": "#b65f1a",
+        "output_comp": "#355c9a",
+        "input_concept_comp": "#2f8f6b",
+        "embedding_comp": "#8f6d2e",
+        "pca_comp": "#7d9a35",
+        "random_comp": "#8d8d8d",
+        "output_active": "#766fb0",
+        "ase_output": "#b34c7d",
+        "embedding_ase": "#a8603f",
+        "per_query_rf": "#222222",
+        "random_stratified": "#6e6e6e",
         "mc": "#222222",
     }
-    main_budget = int(ci["budget"].max())
-    main = ci[ci["budget"] == main_budget]
-    methods = ["sparse_internal", "output_comp", "embedding_comp", "pca_comp", "random_comp", "output_active", "ase_output", "embedding_ase", "input_concept_comp", "per_query_rf", "random_stratified"]
-    methods = [m for m in methods if m in set(main["method"])]
-    main = main.set_index("method").loc[methods].reset_index()
-    fig, ax = plt.subplots(figsize=(8.8, 3.8))
-    x = np.arange(len(main))
-    y = main["rmse_ratio_vs_mc"].to_numpy()
-    lo = y - main["rmse_ratio_ci_low"].to_numpy()
-    hi = main["rmse_ratio_ci_high"].to_numpy() - y
-    ax.bar(x, y, color=[colors[m] for m in main["method"]], edgecolor="black", linewidth=0.7)
-    ax.errorbar(x, y, yerr=np.vstack([lo, hi]), fmt="none", ecolor="black", capsize=3)
-    ax.axhline(1.0, color="#444", linestyle="--", linewidth=1)
-    ax.set_ylabel("RMSE / MC RMSE")
-    ax.set_xticks(x, [method_labels[m] for m in main["method"]], rotation=25, ha="right")
-    ax.set_title(f"{dataset_label} non-output query distribution, budget {main_budget}")
-    ax.grid(axis="y", alpha=0.25)
+    preferred_methods = [
+        "sparse_internal",
+        "output_comp",
+        "embedding_comp",
+        "pca_comp",
+        "random_comp",
+        "output_active",
+        "ase_output",
+        "embedding_ase",
+        "input_concept_comp",
+        "per_query_rf",
+        "random_stratified",
+    ]
+    methods = [m for m in preferred_methods if m in set(ci["method"])]
+    budgets = sorted(int(b) for b in ci["budget"].unique())
+    x_max = max(1.25, float(ci[ci["method"].isin(methods)]["rmse_ratio_ci_high"].max()) * 1.08)
+    fig_width = max(7.2, 3.5 * len(budgets))
+    fig_height = max(4.2, 0.36 * len(methods) + 1.55)
+    fig, axes = plt.subplots(1, len(budgets), figsize=(fig_width, fig_height), sharey=True)
+    if len(budgets) == 1:
+        axes = [axes]
+    y_positions = np.arange(len(methods))
+    for i, (ax, budget) in enumerate(zip(axes, budgets)):
+        sub = ci[(ci["budget"] == budget) & (ci["method"].isin(methods))].set_index("method").reindex(methods)
+        ax.axvspan(0, 1.0, color="#edf4ec", zorder=0)
+        ax.axvline(1.0, color="#4d4d4d", linestyle=(0, (3, 2)), linewidth=1.0, zorder=1)
+        for y_pos, method in zip(y_positions, methods):
+            row = sub.loc[method]
+            if row.isna().any():
+                continue
+            point = float(row["rmse_ratio_vs_mc"])
+            xerr = np.array(
+                [
+                    [point - float(row["rmse_ratio_ci_low"])],
+                    [float(row["rmse_ratio_ci_high"]) - point],
+                ]
+            )
+            ax.errorbar(
+                point,
+                y_pos,
+                xerr=xerr,
+                fmt="o",
+                markersize=5.4,
+                color=colors[method],
+                ecolor="#343434",
+                elinewidth=1.1,
+                capsize=2.5,
+                zorder=3,
+            )
+            ax.text(min(x_max, point + 0.035), y_pos, f"{point:.2f}", va="center", ha="left", fontsize=7.6, color="#303030")
+        ax.set_xlim(0, x_max)
+        ax.set_title(f"Budget {budget}")
+        ax.set_xlabel("RMSE ratio vs MC")
+        ax.grid(axis="x", color="#d8d2c5", linewidth=0.7, alpha=0.75)
+        ax.set_axisbelow(True)
+        if i == 0:
+            ax.set_yticks(y_positions, [method_labels[m] for m in methods])
+        else:
+            ax.tick_params(axis="y", length=0)
+    axes[0].invert_yaxis()
+    fig.suptitle(f"{dataset_label}: estimator error by label budget", x=0.02, ha="left", y=1.03, fontsize=13, fontweight="bold")
+    fig.text(0.02, 0.985, "Lower is better; green band marks improvement over uniform Monte Carlo.", ha="left", va="top", fontsize=8.7, color="#4d4d4d")
     fig.tight_layout()
-    fig.savefig(RESULTS_DIR / "sparse_concept_main_ratios.png", dpi=220)
-    fig.savefig(RESULTS_DIR / "sparse_concept_main_ratios.pdf")
-    plt.close(fig)
+    _save_figure(fig, "sparse_concept_main_ratios")
 
-    fam_main = fam[(fam["budget"] == fam["budget"].max()) & (fam["method"].isin(["sparse_internal", "output_comp", "output_active", "ase_output"]))]
+    family_budget = int(fam["budget"].min())
+    heat_methods = [m for m in ["sparse_internal", "output_comp", "output_active", "ase_output", "input_concept_comp"] if m in set(fam["method"])]
+    fam_main = fam[(fam["budget"] == family_budget) & (fam["method"].isin(heat_methods))]
     families = list(fam_main["family"].drop_duplicates())
-    fig, ax = plt.subplots(figsize=(10.0, 4.2))
-    width = 0.2
-    base = np.arange(len(families))
-    for i, method in enumerate(["sparse_internal", "output_comp", "output_active", "ase_output"]):
-        sub = fam_main[fam_main["method"] == method].set_index("family").reindex(families)
-        ax.bar(base + (i - 1.5) * width, sub["rmse_ratio_vs_mc"], width=width, color=colors[method], label=method_labels[method])
-    ax.axhline(1.0, color="#444", linestyle="--", linewidth=1)
-    ax.set_xticks(base, families, rotation=20, ha="right")
-    ax.set_ylabel("RMSE / MC RMSE")
-    ax.set_title("Query-family breakdown")
-    ax.legend(frameon=False, ncols=2)
-    ax.grid(axis="y", alpha=0.25)
+    matrix = np.full((len(heat_methods), len(families)), np.nan)
+    for row_i, method in enumerate(heat_methods):
+        sub = fam_main[fam_main["method"] == method].set_index("family")
+        for col_i, family in enumerate(families):
+            if family in sub.index:
+                matrix[row_i, col_i] = float(sub.loc[family, "rmse_ratio_vs_mc"])
+    finite = matrix[np.isfinite(matrix)]
+    vmax = max(1.6, float(np.nanmax(finite)) if finite.size else 1.6)
+    vmin = min(0.0, float(np.nanmin(finite)) if finite.size else 0.0)
+    cmap = plt.get_cmap("RdYlGn_r").copy()
+    cmap.set_bad("#efece4")
+    norm = TwoSlopeNorm(vmin=vmin, vcenter=1.0, vmax=vmax)
+    fig, ax = plt.subplots(figsize=(8.2, 3.9))
+    im = ax.imshow(np.ma.masked_invalid(matrix), cmap=cmap, norm=norm, aspect="auto")
+    ax.set_xticks(np.arange(len(families)), [_clean_family_label(f) for f in families])
+    ax.set_yticks(np.arange(len(heat_methods)), [method_labels[m] for m in heat_methods])
+    ax.tick_params(axis="x", length=0)
+    ax.tick_params(axis="y", length=0)
+    ax.set_title(f"{dataset_label}: query-family RMSE ratios at budget {family_budget}", loc="left", fontweight="bold")
+    for row_i in range(matrix.shape[0]):
+        for col_i in range(matrix.shape[1]):
+            if np.isfinite(matrix[row_i, col_i]):
+                color = "white" if matrix[row_i, col_i] > 1.45 or matrix[row_i, col_i] < 0.35 else "#202020"
+                ax.text(col_i, row_i, f"{matrix[row_i, col_i]:.2f}", ha="center", va="center", fontsize=8.2, color=color)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.025)
+    cbar.set_label("RMSE ratio vs MC")
     fig.tight_layout()
-    fig.savefig(RESULTS_DIR / "sparse_concept_family_breakdown.png", dpi=220)
-    fig.savefig(RESULTS_DIR / "sparse_concept_family_breakdown.pdf")
-    plt.close(fig)
+    _save_figure(fig, "sparse_concept_family_breakdown")
 
-    fig, ax = plt.subplots(figsize=(6.5, 3.8))
-    inter_plot = inter.copy()
-    ax.scatter(inter_plot["predicted_target_logit_delta"], inter_plot["target_rate_change_plus"], s=55, color="#bf5b17", label="add component")
-    ax.scatter(-inter_plot["predicted_target_logit_delta"], inter_plot["target_rate_change_minus"], s=55, color="#386cb0", label="subtract component")
-    ax.axhline(0.0, color="#444", linestyle="--", linewidth=1)
-    ax.axvline(0.0, color="#444", linestyle="--", linewidth=1)
-    ax.set_xlabel("predicted target-logit margin change")
-    ax.set_ylabel("observed target-confusion rate change")
-    ax.set_title("Sparse-basis activation interventions")
-    ax.legend(frameon=False)
-    ax.grid(alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(RESULTS_DIR / "sparse_concept_interventions.png", dpi=220)
-    fig.savefig(RESULTS_DIR / "sparse_concept_interventions.pdf")
-    plt.close(fig)
+    if not inter.empty:
+        inter_plot = inter.copy()
+        inter_plot["pair_label"] = inter_plot["source_class_name"].astype(str) + " -> " + inter_plot["target_class_name"].astype(str)
+        inter_plot = inter_plot.sort_values("target_rate_change_plus")
+        y = np.arange(len(inter_plot))
+        fig, ax = plt.subplots(figsize=(7.1, max(3.6, 0.38 * len(inter_plot) + 1.4)))
+        ax.axvline(0.0, color="#4d4d4d", linestyle=(0, (3, 2)), linewidth=1.0)
+        for idx, (_, row) in enumerate(inter_plot.iterrows()):
+            ax.hlines(idx, min(row["target_rate_change_minus"], 0), max(row["target_rate_change_plus"], 0), color="#d5cec0", linewidth=1.8, zorder=1)
+        ax.scatter(inter_plot["target_rate_change_plus"], y + 0.11, s=54, color=colors["sparse_internal"], label="Add component", zorder=3)
+        ax.scatter(inter_plot["target_rate_change_minus"], y - 0.11, s=54, color=colors["output_comp"], label="Subtract component", zorder=3)
+        ax.set_yticks(y, inter_plot["pair_label"])
+        ax.set_xlabel("Change in target-confusion rate")
+        ax.set_title(f"{dataset_label}: activation edits move targeted confusions", loc="left", fontweight="bold")
+        ax.grid(axis="x", color="#d8d2c5", linewidth=0.7, alpha=0.75)
+        ax.legend(frameon=False, loc="lower right")
+        fig.tight_layout()
+        _save_figure(fig, "sparse_concept_interventions")
 
 
 def write_bib() -> None:
@@ -1931,6 +2034,7 @@ def dataset_label_for_args(args: argparse.Namespace) -> str:
 
 def write_report(args: argparse.Namespace, ci: pd.DataFrame, summary: pd.DataFrame, fam: pd.DataFrame, risk: pd.DataFrame, be: pd.DataFrame, dict_df: pd.DataFrame, inter: pd.DataFrame, cost: pd.DataFrame) -> None:
     main_budget = max(args.budgets)
+    family_budget = min(args.budgets)
     dataset_label = dataset_label_for_args(args)
     if args.model_type == "cnn":
         model_label = "CNN"
@@ -1943,7 +2047,7 @@ def write_report(args: argparse.Namespace, ci: pd.DataFrame, summary: pd.DataFra
     main = ci[ci["budget"] == main_budget][["method", "rmse", "rmse_ratio_vs_mc", "rmse_ratio_ci_low", "rmse_ratio_ci_high", "model_queries"]]
     be_display = be.copy()
     be_display["first_query_count_beating_label_matched_mc"] = be_display["first_query_count_beating_label_matched_mc"].apply(lambda x: "not reached" if pd.isna(x) else int(x))
-    fam_main = fam[(fam["budget"] == main_budget) & (fam["method"].isin(["sparse_internal", "output_comp", "output_active", "ase_output", "input_concept_comp"]))][
+    fam_main = fam[(fam["budget"] == family_budget) & (fam["method"].isin(["sparse_internal", "output_comp", "output_active", "ase_output", "input_concept_comp"]))][
         ["family", "method", "model_queries", "mean_reference_rate", "rmse_ratio_vs_mc", "effective_mc_multiplier"]
     ]
     query_dist = cost.groupby(["family", "uses_concept"], as_index=False).agg(queries=("model_query_id", "nunique"), mean_reference_rate=("reference_rate", "mean"), mean_select_rate=("select_rate", "mean"))
@@ -1957,7 +2061,7 @@ Date: 2026-05-22
 
 This experiment tests whether one reusable sparse activation basis can support many rare failure-rate audits without training a new risk model per query. A {model_label} is trained on {dataset_label}. For each trained model, a sparse dictionary is learned once from penultimate activations, reusable atom heads are fit once, and audit queries are sampled from fixed family weights plus a rarity filter, dominated by non-output-defined sparse-basis and image-concept conditions. Each query is compiled over the same atom bank and estimated by stratified sampling.
 
-At budget `{main_budget}`, the sparse internal compositor has an RMSE ratio of `{float(main[main.method == 'sparse_internal']['rmse_ratio_vs_mc'].iloc[0]):.3f}` relative to Monte Carlo, with a model-query bootstrap interval `{float(main[main.method == 'sparse_internal']['rmse_ratio_ci_low'].iloc[0]):.3f}` to `{float(main[main.method == 'sparse_internal']['rmse_ratio_ci_high'].iloc[0]):.3f}`. The run also reports output-only, embedding, PCA, random-dictionary, and per-query supervised baselines, plus a verdict table that applies the pre-registered support and disproof criteria. Sparse-basis activation interventions provide a directional sanity check that the basis is not only an offline ranking device.
+At budget `{main_budget}`, the sparse internal compositor has an RMSE ratio of `{float(main[main.method == 'sparse_internal']['rmse_ratio_vs_mc'].iloc[0]):.3f}` relative to Monte Carlo, with a model-query bootstrap interval `{float(main[main.method == 'sparse_internal']['rmse_ratio_ci_low'].iloc[0]):.3f}` to `{float(main[main.method == 'sparse_internal']['rmse_ratio_ci_high'].iloc[0]):.3f}`. The run also reports output-only, embedding, PCA, random-dictionary, and per-query supervised baselines, plus a verdict table for the benchmark criteria. Sparse-basis activation interventions check whether selected basis directions move the targeted model behavior.
 
 ## Idea
 
@@ -2000,7 +2104,7 @@ RMSE ratios are relative to same-budget Monte Carlo. Intervals bootstrap model-q
 
 {markdown_table(main)}
 
-![Main ratios](experiments/results/sparse_concept_main_ratios.png)
+![Estimator RMSE ratios by budget](experiments/results/sparse_concept_main_ratios.png)
 
 The key comparison is not just against MC. The benchmark also includes output-only active testing, output-only learned composition, output-only and embedding active surrogate estimation, hand-engineered input concepts, dense PCA features, random sparse projections, and per-query supervised risk models.
 
@@ -2016,9 +2120,9 @@ This is the amortization test: the expensive basis is justified only if it is re
 
 {markdown_table(fam_main, max_rows=80)}
 
-![Family breakdown](experiments/results/sparse_concept_family_breakdown.png)
+![Query-family RMSE ratios](experiments/results/sparse_concept_family_breakdown.png)
 
-The family-level table separates basis-conditioned, image-concept, and output-defined queries. This is where to check whether any aggregate gain is coming from the sparse explanation itself or from generic confidence/error ranking.
+The family-level table uses budget `{family_budget}` and separates basis-conditioned, image-concept, and output-defined queries. This is where to check whether any aggregate gain is coming from the sparse explanation itself or from generic confidence/error ranking.
 
 ## Dictionary Quality
 
@@ -2032,9 +2136,9 @@ For each trained model, the intervention selects common class confusions, choose
 
 {markdown_table(inter_view, max_rows=16)}
 
-![Interventions](experiments/results/sparse_concept_interventions.png)
+![Activation intervention effects](experiments/results/sparse_concept_interventions.png)
 
-Adding the selected component usually increases the targeted confusion rate; subtracting it usually reduces or weakens that direction. This is a directional sanity check, not a full causal abstraction proof: the edited component is chosen to align with the target-vs-source logit margin under the linear readout.
+Adding the selected component usually increases the targeted confusion rate; subtracting it usually reduces or weakens that direction. This is an intervention check, not a full causal abstraction proof: the edited component is chosen to align with the target-vs-source logit margin under the linear readout.
 
 ## Comparison To Earlier Failed Experiments
 
@@ -2050,7 +2154,7 @@ The current experiment addresses those issues by using an unsupervised sparse ac
 
 1. The sparse-basis query distribution is intentionally tied to the learned explanation object. That is the point of this experiment, but a deployment paper should also include externally meaningful subgroup metadata.
 2. The sparse dictionary is moderately stable, not definitive. A submission should report stability across more seeds, dictionary sizes, and sparse coding objectives.
-3. The intervention is a directional sanity check, not a causal abstraction theorem. It manipulates penultimate activations along sparse decoder directions and observes class-confusion changes; it does not prove the components are human-semantic causal variables.
+3. The intervention is a small activation-edit check, not a causal abstraction theorem. It manipulates penultimate activations along sparse decoder directions and observes class-confusion changes; it does not prove the components are human-semantic causal variables.
 4. {dataset_label} is more realistic than the synthetic motif and sklearn digits tasks, but it is still small relative to modern vision benchmarks. A top-conference version should add a harder dataset with natural subgroup metadata.
 5. Active surrogate estimation here is deliberately output-only because output-only baselines were the main threat in prior runs. A broader baseline suite should include richer surrogate features and multiple acquisition policies.
 
@@ -2084,7 +2188,7 @@ Core files to keep:
 
 ## Conclusion
 
-The data supports the central idea: rare-failure auditing can be made reusable and compositional. A sparse activation dictionary learned once per model can be combined with query-specific Boolean compositions to reduce rare-event estimation error across a pre-specified workload, outperforming output-only active testing and output-only active surrogate estimation on non-output-defined queries. The cleanest interpretation is not that every sparse component is a human-legible explanation; it is that sparse internal bases can serve as reusable audit infrastructure when many related rare-event questions must be answered.
+The data supports a scoped version of the idea. In this workload, a sparse activation dictionary learned once per model can be combined with query-specific Boolean compositions to reduce rare-event estimation error across related queries. The result should not be read as evidence that every sparse component is human-legible. It is evidence that sparse internal bases can serve as reusable audit infrastructure when many related rare-event questions must be answered.
 
 ## References
 
