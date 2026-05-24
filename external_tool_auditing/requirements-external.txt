@@ -1,0 +1,12 @@
+einops
+jaxtyping
+pydantic
+tqdm
+wandb
+safetensors
+simple-parsing
+pyyaml
+python-dotenv
+transformers
+datasets
+transformer-lens

@@ -1,0 +1,56 @@
+{
+  "args": {
+    "results_dir": "external_tool_auditing/results/paper_independent_budget_sweep",
+    "basis_kinds": [
+      "sklearn_sdl",
+      "saelens_sae",
+      "spd"
+    ],
+    "query_policy": "independent_external",
+    "seeds": [
+      20260521
+    ],
+    "dictionary_seeds": [
+      0
+    ],
+    "train_n": 6000,
+    "epochs": 1,
+    "concept_calib_n": 2500,
+    "build_n": 6000,
+    "select_n": 8000,
+    "ref_n": 10000,
+    "risk_eval_n": 6000,
+    "intervention_n": 5000,
+    "pool_n": 3072,
+    "query_count": 12,
+    "max_candidates": 1800,
+    "rate_min": 0.001,
+    "rate_max": 0.04,
+    "query_mode": "external",
+    "dictionary_components": 48,
+    "dictionary_alpha": 0.35,
+    "budgets": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048
+    ],
+    "reps": 3,
+    "torch_threads": 6,
+    "torch_inter_op_threads": 1,
+    "sklearn_alpha": 0.35,
+    "sklearn_max_iter": 350,
+    "sae_l1": 0.03,
+    "sae_steps": 180,
+    "sae_batch_size": 256,
+    "sae_lr": 0.001,
+    "spd_importance_coeff": 0.03,
+    "spd_steps": 120,
+    "spd_batch_size": 256,
+    "spd_lr": 0.003
+  },
+  "elapsed_seconds": 1743.990718957968,
+  "rows": 7776
+}
